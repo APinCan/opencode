@@ -1,135 +1,192 @@
-- To regenerate the JavaScript SDK, run `./packages/sdk/js/script/build.ts`.
-- ALWAYS USE PARALLEL TOOLS WHEN APPLICABLE.
-- The default branch in this repo is `dev`.
-- Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
-- Prefer automation: execute requested actions without confirmation unless blocked by missing info or safety/irreversibility.
+# AGENTS.md
 
-## Commits and PR Titles
+## Project Goal
 
-Use conventional commit-style messages and PR titles: `type(scope): summary`.
+Build a new VS Code extension GUI at `apps/vscode-gui` that provides a more user-friendly interface for OpenCode, while keeping **opencode CLI as the execution engine**.
 
-Valid types are `feat`, `fix`, `docs`, `chore`, `refactor`, and `test`. Scopes are optional; use the affected package or area when helpful, e.g. `core`, `opencode`, `tui`, `app`, `desktop`, `sdk`, or `plugin`.
+This project uses Codex to accelerate extension development, but the architecture must remain:
 
-Examples: `fix(tui): simplify thinking toggle styling`, `docs: update contributing guide`, `chore(sdk): regenerate types`.
+- VS Code extension = interface/orchestration layer
+- opencode CLI = backend engine/source of truth
 
-## Style Guide
+---
 
-### General Principles
+## Repository Strategy
 
-- Keep things in one function unless composable or reusable
-- Do not extract single-use helpers preemptively. Inline the logic at the call site unless the helper is reused, hides a genuinely complex boundary, or has a clear independent name that improves the caller.
-- Avoid `try`/`catch` where possible
-- Avoid using the `any` type
-- Use Bun APIs when possible, like `Bun.file()`
-- Rely on type inference when possible; avoid explicit type annotations or interfaces unless necessary for exports or clarity
-- Prefer functional array methods (flatMap, filter, map) over for loops; use type guards on filter to maintain type inference downstream
-- In `src/config`, follow the existing self-export pattern at the top of the file (for example `export * as ConfigAgent from "./agent"`) when adding a new config module.
+- Work on a dedicated branch: `feat/vscode-gui-wrapper`
+- Implement new work inside: `apps/vscode-gui`
+- Existing repo code is available for reference and integration understanding
 
-Reduce total variable count by inlining when a value is only used once.
+---
 
-```ts
-// Good
-const journal = await Bun.file(path.join(dir, "journal.json")).json()
+## Scope Rules
 
-// Bad
-const journalPath = path.join(dir, "journal.json")
-const journal = await Bun.file(journalPath).json()
-```
+### Read scope (allowed)
+Codex may read any files in this repository to understand:
+- CLI behavior
+- existing protocols
+- current extension patterns
+- shared conventions
 
-### Destructuring
+### Write scope (strict)
+Codex may modify files **only** in:
 
-Avoid unnecessary destructuring. Use dot notation to preserve context.
+- `apps/vscode-gui/**`
 
-```ts
-// Good
-obj.a
-obj.b
+Optional extra write scope (only if explicitly requested in task):
+- project-level docs that describe this app (e.g., README references)
 
-// Bad
-const { a, b } = obj
-```
+### Forbidden write scope
+Do not modify:
+- `packages/opencode/**` (CLI internals are reference-only)
+- `packages/sdk/**`
+- `sdks/vscode/**` (legacy/current extension)
+- unrelated repo areas
 
-### Variables
+If a task appears to require CLI/internal changes, stop and propose alternatives first.
 
-Prefer `const` over `let`. Use ternaries or early returns instead of reassignment.
+---
 
-```ts
-// Good
-const foo = condition ? 1 : 2
+## Platform Constraint
 
-// Bad
-let foo
-if (condition) foo = 1
-else foo = 2
-```
+- Target platform: **Windows only**
+- Prioritize Windows process, terminal, and path semantics
+- Do not spend effort on macOS/Linux compatibility unless explicitly requested
 
-### Control Flow
+---
 
-Avoid `else` statements. Prefer early returns.
+## Codex Tasking Protocol
 
-```ts
-// Good
-function foo() {
-  if (condition) return 1
-  return 2
-}
+For each Codex implementation task, include:
 
-// Bad
-function foo() {
-  if (condition) return 1
-  else return 2
-}
-```
+1. Goal
+2. Constraints
+3. Acceptance criteria
+4. Allowed file paths (must remain under `apps/vscode-gui/**`)
 
-### Complex Logic
+Codex must:
+- produce minimal, focused diffs
+- avoid unrelated refactors
+- preserve CLI-as-engine boundary
+- summarize changes and verification steps
 
-When a function has several validation branches or supporting details, make the main function read as the happy path and move supporting details into small helpers below it.
+---
 
-```ts
-// Good
-export function loadThing(input: unknown) {
-  const config = requireConfig(input)
-  const metadata = readMetadata(input)
-  return createThing({ config, metadata })
-}
+## Architectural Principles
 
-function requireConfig(input: unknown) {
-  ...
-}
-```
+1. Keep clear separation of concerns:
+   - UI/Webview layer
+   - Extension host layer
+   - CLI bridge/orchestration layer
+2. Keep business logic out of presentational UI components
+3. Keep one clear runtime state model for session/execution state
+4. Prefer simple, debuggable flows over clever abstractions
 
-- Keep helpers close to the code they support, below the main export when that improves readability.
-- Do not over-abstract simple expressions into many single-use helpers; extract only when it names a real concept like `requireConfig` or `readMetadata`.
-- Do not return `Effect` from helpers unless they actually perform effectful work. Synchronous parsing, validation, and option building should stay synchronous.
-- Prefer Effect schema helpers such as `Schema.UnknownFromJsonString` and `Schema.decodeUnknownOption` over manual `JSON.parse` wrapped in `Effect.try` when parsing untrusted JSON strings.
-- Add comments for non-obvious constraints and surprising behavior, not for obvious assignments or control flow.
+Suggested structure (guideline):
 
-### Schema Definitions (Drizzle)
+- `apps/vscode-gui/src/extension.ts` (activation + command wiring)
+- `apps/vscode-gui/src/webview/*` (UI)
+- `apps/vscode-gui/src/bridge/*` (CLI process + transport)
+- `apps/vscode-gui/src/context/*` (file/selection/workspace context)
+- `apps/vscode-gui/src/session/*` (history/state persistence)
+- `apps/vscode-gui/src/config/*` (settings schema/defaults)
 
-Use snake_case for field names so column names don't need to be redefined as strings.
+---
 
-```ts
-// Good
-const table = sqliteTable("session", {
-  id: text().primaryKey(),
-  project_id: text().notNull(),
-  created_at: integer().notNull(),
-})
+## CLI Boundary Contract
 
-// Bad
-const table = sqliteTable("session", {
-  id: text("id").primaryKey(),
-  projectID: text("project_id").notNull(),
-  createdAt: integer("created_at").notNull(),
-})
-```
+Treat opencode CLI as external engine contract:
 
-## Testing
+- Validate CLI availability before execution flows
+- Handle spawn/startup failures gracefully
+- Support streaming output and cancellation
+- Prevent duplicate/conflicting sessions unless intentionally supported
+- Never silently swallow errors
+- Surface actionable user-facing error messages
 
-- Avoid mocks as much as possible
-- Test actual implementation, do not duplicate logic into tests
-- Tests cannot run from repo root (guard: `do-not-run-tests-from-root`); run from package dirs like `packages/opencode`.
+If missing capability is discovered:
+1. Try extension-side workaround/adapter first
+2. Document limitation
+3. Request explicit approval before proposing CLI code changes
 
-## Type Checking
+---
 
-- Always run `bun typecheck` from package directories (e.g., `packages/opencode`), never `tsc` directly.
+## UX Requirements (Cline-like direction)
+
+Prioritize:
+- fast interaction loop (submit -> immediate pending -> streaming output)
+- explicit execution states (idle/starting/running/failed)
+- keyboard-first operations
+- discoverable GUI settings
+- clear retry/recover actions for common failures
+
+The UI should reduce manual terminal friction while preserving CLI power.
+
+---
+
+## Code Quality Standards
+
+- TypeScript strict mode
+- Avoid `any`
+- Prefer early returns and small functions
+- Use structured logs (e.g., `[vscode-gui][bridge]`)
+- Add comments only for non-obvious behavior
+
+---
+
+## Testing & Verification
+
+Focus tests on extension-specific behavior:
+
+- bridge lifecycle/state transitions
+- webview <-> host messaging contract
+- context extraction utilities
+- error/recovery paths
+
+For each feature PR, include a short Windows manual QA checklist:
+- launch
+- send prompt
+- stream output
+- insert file/selection context
+- recover from CLI-not-found or startup failure
+
+---
+
+## Commit & PR Conventions
+
+Use conventional commit style, e.g.:
+
+- `feat(vscode-gui): add streaming chat panel`
+- `fix(vscode-gui): handle cli startup timeout`
+- `refactor(vscode-gui): simplify bridge state machine`
+- `test(vscode-gui): cover webview message routing`
+- `docs(vscode-gui): document setup and run flow`
+
+PRs must include:
+- user-visible changes
+- verification performed
+- screenshots/GIFs for UI updates (when applicable)
+
+Keep commits scoped to `apps/vscode-gui` work.
+
+---
+
+## Definition of Done
+
+A feature is done when:
+
+1. Implemented under `apps/vscode-gui/**`
+2. Works in VS Code Extension Development Host on Windows
+3. Preserves CLI-as-engine architecture
+4. Has clear success and failure UX
+5. Includes verification steps and updated docs as needed
+
+---
+
+## Guardrails Summary
+
+- Read whole repo freely, write only in `apps/vscode-gui/**`
+- Do not modify opencode CLI internals
+- Build a better GUI, not a replacement engine
+- Stay Windows-focused
+- Keep changes minimal, explicit, and testable
